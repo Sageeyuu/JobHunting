@@ -13,11 +13,12 @@
   const SOURCE_NAME = { keyword: 'Keyword check', claude: 'Assessed by Claude' };
   const NOTE_TYPES = ['Note', 'Email', 'Call', 'Follow-up', 'Interview', 'Feedback'];
 
-  const blank = () => ({ profile: { name: '', headline: '', cv: '', goals: '', mustHaves: '', dealBreakers: '', minSalary: '', locations: '' }, jobs: [] });
-  const ui = { open: null, prep: null, tab: 'cv', filter: 'all', confirm: null, importing: null };
+  const blank = () => ({ profile: { name: '', headline: '', cv: '', cvFile: '', cvRead: '', goals: '', mustHaves: '', dealBreakers: '', minSalary: '', locations: '' }, jobs: [] });
+  const ui = { open: null, prep: null, tab: 'cv', filter: 'all', confirm: null, importing: null, cvBusy: false, cvPending: null, sort: {}, q: '' };
   let S = load();
   let storageOk = true;
   let saveTimer = null;
+  let needsRender = false;
 
   function load() {
     try {
@@ -108,7 +109,82 @@
       '<div class="row">' + btn('Use this reply', 'importReply', j.id + '|' + ctx, 'quiet') + '</div></div>';
   }
 
+  /* ---------- spreadsheet ---------- */
+  const OPT = (o, v) => o.map(([a, t]) => '<option value="' + esc(a) + '"' + (a === v ? ' selected' : '') + '>' + esc(t) + '</option>').join('');
+  const cIn = (bind, v, label, ph) => '<input class="c" id="' + bid(bind) + '" data-bind="' + esc(bind) + '" value="' + esc(v) + '" aria-label="' + esc(label) + '" placeholder="' + esc(ph || '') + '">';
+  const cDate = (bind, v, label) => '<input class="c" type="date" id="' + bid(bind) + '" data-bind="' + esc(bind) + '" value="' + esc(v) + '" aria-label="' + esc(label) + '">';
+  const cSel = (bind, v, options, label, cls) => '<select class="c ' + (cls || '') + '" id="' + bid(bind) + '" data-bind="' + esc(bind) + '" aria-label="' + esc(label) + '">' + OPT(options, v) + '</select>';
+  const cArea = (bind, v, label) => '<textarea class="c" rows="2" id="' + bid(bind) + '" data-bind="' + esc(bind) + '" aria-label="' + esc(label) + '">' + esc(v) + '</textarea>';
+  const ro = (html, cls) => '<div class="ro ' + (cls || '') + '">' + html + '</div>';
+  const roJob = (j) => ro('<strong>' + esc(jobName(j)) + '</strong>');
+  const num = (v) => ro(esc(v), 'mono num');
+
+  function sheet(name, cols, rows, opts = {}) {
+    const sort = ui.sort[name];
+    const list = rows.slice();
+    if (sort) {
+      const col = cols.find((c) => c.key === sort.key);
+      if (col && col.val) {
+        list.sort((a, b) => {
+          const x = col.val(a);
+          const y = col.val(b);
+          if (x === '' || x == null) return y === '' || y == null ? 0 : 1;
+          if (y === '' || y == null) return -1;
+          return (x < y ? -1 : x > y ? 1 : 0) * sort.dir;
+        });
+      }
+    }
+    const nW = opts.numbered === false ? 0 : 52;
+    const total = cols.reduce((w, c) => w + c.w, nW);
+    const colgroup = (nW ? '<col style="width:' + nW + 'px">' : '') + cols.map((c) => '<col style="width:' + c.w + 'px">').join('');
+    const headers = cols.map((c, i) => {
+      const on = sort && sort.key === c.key;
+      const aria = on ? ' aria-sort="' + (sort.dir > 0 ? 'ascending' : 'descending') + '"' : '';
+      const inner = c.val ? '<button type="button" data-action="sort" data-id="' + esc(name + '|' + c.key) + '">' + esc(c.label) + (on ? (sort.dir > 0 ? ' ▲' : ' ▼') : '') + '</button>' : esc(c.label);
+      return '<th scope="col"' + aria + (i === 0 && nW ? ' class="stick"' : '') + '>' + inner + '</th>';
+    }).join('');
+    const colspan = cols.length + (nW ? 1 : 0);
+    const body = list.map((r, i) => {
+      const id = opts.rowId ? opts.rowId(r) : r.id;
+      const open = opts.detail && ui.open === id;
+      const n = !nW ? '' : '<td class="n">' + (opts.detail ? '<button type="button" class="n-btn" data-action="toggle" data-id="' + esc(id) + '" aria-expanded="' + !!open + '" aria-label="Details for row ' + (i + 1) + '"><span>' + (i + 1) + '</span><span aria-hidden="true">' + (open ? '▾' : '▸') + '</span></button>' : (i + 1)) + '</td>';
+      const hay = opts.hay ? ' data-h="' + esc(opts.hay(r).toLowerCase()) + '"' : '';
+      return '<tr class="r' + (open ? ' is-open' : '') + '"' + hay + '>' + n + cols.map((c, ci) => '<td class="' + (ci === 0 && nW ? 'stick' : '') + '">' + c.cell(r, i) + '</td>').join('') + '</tr>' +
+        (open ? '<tr class="detail"><td colspan="' + colspan + '"><div class="detail-in">' + opts.detail(r) + '</div></td></tr>' : '');
+    }).join('');
+    return '<div class="sheet-wrap' + (opts.main ? ' sheet-main' : '') + '"><table class="sheet" style="width:' + total + 'px"><colgroup>' + colgroup + '</colgroup><thead><tr>' + (nW ? '<th class="n">#</th>' : '') + headers + '</tr></thead><tbody>' + body + (opts.newRow || '') + '</tbody></table></div>';
+  }
+  const filterBox = (ph) => '<label class="filter" for="sheet-filter"><span>Filter</span><input id="sheet-filter" value="' + esc(ui.q) + '" placeholder="' + esc(ph) + '"></label>';
+  function applyFilter() {
+    const q = ui.q.trim().toLowerCase();
+    document.querySelectorAll('.sheet-main > table > tbody > tr.r[data-h]').forEach((tr) => {
+      const hide = !!q && !tr.dataset.h.includes(q);
+      tr.hidden = hide;
+      const next = tr.nextElementSibling;
+      if (next && next.classList.contains('detail')) next.hidden = hide;
+    });
+  }
+  function moveCell(el, dr, dc) {
+    const td = el.closest('td');
+    const table = td.closest('table');
+    const rows = [...table.tBodies[0].rows].filter((r) => r.classList.contains('r') && !r.hidden);
+    let r = rows.indexOf(td.parentNode);
+    let c = td.cellIndex;
+    const control = (row, col) => row.cells[col] && row.cells[col].querySelector('input,select,textarea');
+    for (;;) {
+      r += dr; c += dc;
+      if (r < 0 || r >= rows.length || c < 0 || c >= rows[r].cells.length) return false;
+      const target = control(rows[r], c);
+      if (target) { target.focus(); if (target.select && target.type !== 'date' && target.tagName !== 'SELECT') target.select(); return true; }
+    }
+  }
+
   /* ---------- stage 1 ---------- */
+  function cvUpload(p) {
+    if (ui.cvPending) return '<div class="banner warn"><p>Replace the CV text below with ' + esc(ui.cvPending.name) + '?</p><div class="row">' + btn('Replace', 'useCv') + btn('Keep current text', 'dropCv', '', 'quiet') + '</div></div>';
+    const status = p.cvFile ? 'Read from ' + p.cvFile + ' on ' + fmtDate(p.cvRead) + '. Check the text below looks right.' : 'Upload a PDF and the text is filled in for you. The file stays on your device.';
+    return '<div class="upload">' + btn(ui.cvBusy ? 'Reading your CV…' : p.cvFile ? 'Upload a new CV (PDF)' : 'Upload CV (PDF)', 'pickCv', '', '', ui.cvBusy ? 'disabled' : '') + '<p>' + esc(status) + '</p></div>';
+  }
   function viewProfile() {
     const p = S.profile;
     const done = [p.cv, p.goals, p.mustHaves || p.dealBreakers].filter((v) => v && v.trim()).length;
@@ -118,7 +194,8 @@
     return '<div class="page">' + head('Your profile', 'Everything else is measured against this. Update it whenever your CV or priorities change.') + intro + ex +
       '<section class="panel"><div class="panel-head"><h2>Who you are</h2>' + pill(done === 3 ? 'ok' : 'none', done + ' of 3 essentials filled') + '</div>' +
       '<div class="grid-2">' + field('Name', 'p|name', p.name) + field('Headline', 'p|headline', p.headline, { ph: 'e.g. Economics PhD moving into data science' }) + '</div>' +
-      field('CV', 'p|cv', p.cv, { area: 1, cls: 'tall', ph: 'Paste your full CV as text. One achievement per line gives the best matching.' }) +
+      cvUpload(p) +
+      field('CV text', 'p|cv', p.cv, { area: 1, cls: 'tall', ph: 'Your CV appears here after you upload it. You can also type or paste it.' }) +
       '<p class="hint mono">' + lines + ' usable CV lines found</p></section>' +
       '<section class="panel"><h2>What you want</h2>' + field('Career goals', 'p|goals', p.goals, { area: 1, ph: 'Where do you want to be in two or three years?' }) +
       '<div class="grid-2">' + field('Must-haves (one per line)', 'p|mustHaves', p.mustHaves, { area: 1, ph: 'Visa sponsorship\nAnalytical work' }) + field('Deal-breakers (one per line)', 'p|dealBreakers', p.dealBreakers, { area: 1, ph: 'Commission only\nNight shifts' }) + '</div>' +
@@ -133,73 +210,98 @@
         '<select aria-label="Importance" id="' + bid('rt|' + r.id) + '" data-bind="req|' + j.id + '|' + r.id + '|type"><option value="must"' + (r.type === 'must' ? ' selected' : '') + '>Must</option><option value="nice"' + (r.type === 'nice' ? ' selected' : '') + '>Nice</option></select>' +
         '<button type="button" class="icon" aria-label="Remove requirement" data-action="delReq" data-id="' + j.id + '|' + r.id + '">×</button></div>').join('') : '<p class="hint">None yet. Paste the description above and choose Find requirements.</p>') + '</div>';
   }
-  function jobCard(j) {
-    const open = ui.open === j.id;
-    const state = j.requirements.length ? pill('ok', j.requirements.length + ' requirements') : pill('soon', j.description ? 'No requirements found' : 'Needs description');
-    return '<article class="card"><button type="button" class="card-top" data-action="toggle" data-id="' + j.id + '" aria-expanded="' + open + '"><span class="card-title"><strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + '</small></span><span class="card-tags">' + state + deadlinePill(j) + '</span></button>' +
-      (open ? '<div class="card-body">' + (j.url ? '<p class="hint"><a href="' + safeHref(j.url) + '" target="_blank" rel="noopener">Open the advert</a></p>' : '') +
-        '<div class="grid-2">' + field('Job title', 'job|' + j.id + '|title', j.title) + field('Company', 'job|' + j.id + '|company', j.company) + field('Location', 'job|' + j.id + '|location', j.location) + field('Salary', 'job|' + j.id + '|salary', j.salary) + field('Closing date', 'job|' + j.id + '|deadline', j.deadline, { type: 'date' }) + '</div>' +
-        field('Job description', 'job|' + j.id + '|description', j.description, { area: 1, cls: 'tall', ph: 'Open the advert, copy the whole text and paste it here.' }) +
-        '<div class="row">' + btn('Find requirements', 'extract', j.id) + '</div>' + reqEditor(j) + (j.description && j.requirements.length ? '' : claudePanel(j, 'jobs')) +
-        '<div class="row">' + twoStep('Remove job', 'delJob', j.id) + '</div></div>' : '') + '</article>';
+  function jobDetail(j) {
+    return (j.url ? '<p class="hint"><a href="' + safeHref(j.url) + '" target="_blank" rel="noopener">Open the advert</a></p>' : '') +
+      field('Job description', 'job|' + j.id + '|description', j.description, { area: 1, cls: 'tall', ph: 'Open the advert, copy the whole text and paste it here.' }) +
+      '<div class="row">' + btn('Find requirements', 'extract', j.id) + '</div>' + reqEditor(j) + (j.description && j.requirements.length ? '' : claudePanel(j, 'jobs')) +
+      '<div class="row">' + twoStep('Remove job', 'delJob', j.id) + '</div>';
   }
   function viewJobs() {
-    return '<div class="page">' + head('Add jobs', 'Save links as you find them. Add the description when you are ready to assess one.') +
-      '<section class="panel"><div class="grid-2"><div class="stack">' + '<label class="f" for="new-links">Job links, one per line<textarea id="new-links" placeholder="https://…"></textarea></label><div class="row">' + btn('Save links', 'addLinks') + '</div></div>' +
-      '<div class="stack"><label class="f" for="new-jd">Or paste a job description<textarea id="new-jd" placeholder="Use this when a link won’t open or has expired."></textarea></label><div class="row">' + btn('Save description', 'addJd', '', 'quiet') + '</div></div></div></section>' +
-      (S.jobs.length ? '<section class="stack">' + S.jobs.slice().reverse().map(jobCard).join('') + '</section>' : empty('Your saved jobs will appear here with their requirements listed.')) + '</div>';
+    const cols = [
+      { key: 'url', label: 'Link', w: 220, val: (j) => j.url, cell: (j) => cIn('job|' + j.id + '|url', j.url, 'Link', 'https://…') },
+      { key: 'title', label: 'Job title', w: 200, val: (j) => j.title.toLowerCase(), cell: (j) => cIn('job|' + j.id + '|title', j.title, 'Job title') },
+      { key: 'company', label: 'Company', w: 170, val: (j) => j.company.toLowerCase(), cell: (j) => cIn('job|' + j.id + '|company', j.company, 'Company') },
+      { key: 'location', label: 'Location', w: 130, val: (j) => j.location.toLowerCase(), cell: (j) => cIn('job|' + j.id + '|location', j.location, 'Location') },
+      { key: 'salary', label: 'Salary', w: 150, val: (j) => j.salary, cell: (j) => cIn('job|' + j.id + '|salary', j.salary, 'Salary') },
+      { key: 'deadline', label: 'Closing date', w: 150, val: (j) => j.deadline, cell: (j) => cDate('job|' + j.id + '|deadline', j.deadline, 'Closing date') },
+      { key: 'reqs', label: 'Requirements', w: 170, val: (j) => j.requirements.length, cell: (j) => ro(j.requirements.length ? pill('ok', j.requirements.length + ' found') : pill('soon', j.description ? 'None found' : 'Needs description')) },
+    ];
+    const newRow = '<tr class="r new"><td class="n">+</td>' + [['url', 'New job: paste a link', 'Paste link(s) here'], ['title', 'New job: title', 'Or type a job title'], ['company', 'New job: company', ''], ['location', 'New job: location', ''], ['salary', 'New job: salary', '']].map(([k, l, ph], i) => '<td' + (i ? '' : ' class="stick"') + '><input class="c" id="new-' + k + '" data-new="' + k + '" aria-label="' + l + '" placeholder="' + ph + '"></td>').join('') + '<td></td><td></td></tr>';
+    return '<div class="page wide">' + head('Add jobs', 'Paste links into the bottom row, or type straight into any cell. Open a row with ▸ to add its description.') +
+      '<div class="toolbar">' + filterBox('Title, company or location') + '<span class="hint mono">' + S.jobs.length + ' jobs</span></div>' +
+      sheet('jobs', cols, S.jobs, { main: true, detail: jobDetail, newRow, hay: (j) => [j.url, j.title, j.company, j.location].join(' ') }) +
+      '<details class="more"' + (S.jobs.length ? '' : ' open') + '><summary>Paste many links or a whole job description</summary><div class="grid-2"><div class="stack"><label class="f" for="new-links">Job links, one per line<textarea id="new-links" placeholder="https://…"></textarea></label><div class="row">' + btn('Save links', 'addLinks') + '</div></div>' +
+      '<div class="stack"><label class="f" for="new-jd">Job description<textarea id="new-jd" placeholder="Use this when a link won’t open or has expired."></textarea></label><div class="row">' + btn('Save description', 'addJd', '', 'quiet') + '</div></div></div></details></div>';
   }
 
   /* ---------- stage 3 ---------- */
-  function itemCard(j, i) {
-    const opts = [['strength', 'Strength'], ['gap', 'Gap'], ['unknown', 'Unknown']];
-    return '<div class="item"><div class="row">' + pill(i.type === 'must' ? 'info' : 'none', i.type === 'must' ? 'Must' : 'Nice') + (i.unverified ? pill('flag', 'Not found in your CV') : '') + '</div><div>' + esc(i.text) + '</div>' +
-      (i.note ? '<div class="note">' + esc(i.note) + '</div>' : '') +
-      '<label class="f" for="' + bid('ev|' + i.rid) + '">Evidence<textarea id="' + bid('ev|' + i.rid) + '" data-bind="item|' + j.id + '|' + i.rid + '|evidence">' + esc(i.evidence) + '</textarea></label>' +
-      select('Result', 'item|' + j.id + '|' + i.rid + '|status', i.status, opts) + '</div>';
-  }
+  const checkOf = (j, label) => { const c = j.evaluation && j.evaluation.checks.find((x) => x.label === label); return c ? pill(c.status === 'ok' ? 'ok' : c.status === 'flag' ? 'flag' : 'unknown', c.status === 'ok' ? 'OK' : c.status === 'flag' ? 'Below' : 'Check') : ''; };
   function evalDetail(j) {
     const ev = j.evaluation;
-    if (!ev) return '';
-    const r = recOf(j);
-    const lane = (s, name) => { const list = ev.items.filter((i) => i.status === s); return '<div class="lane"><h3>' + name + '<span class="mono">' + list.length + '</span></h3>' + (list.map((i) => itemCard(j, i)).join('') || '<p class="hint">None</p>') + '</div>'; };
-    return '<div class="verdict">' + (r.rec ? pill(r.rec, REC_NAME[r.rec]) : '') + '<p>' + esc(r.why) + '</p>' + select('Your call', 'job|' + j.id + '|evaluation.override', ev.override, [['', 'Follow the checks'], ['apply', 'Apply'], ['consider', 'Consider'], ['skip', 'Skip']]) + '</div>' +
-      (isStale(j) ? '<div class="banner warn"><p>Your profile or this job’s requirements changed after this check.</p>' + btn('Check again', 'evaluate', j.id, 'quiet') + '</div>' : '') +
-      (ev.hits.length ? '<div class="stack">' + ev.hits.map((h) => '<div class="item">' + pill('flag', 'Deal-breaker: ' + h.rule) + '<div class="note">“' + esc(h.quote) + '”</div></div>').join('') + '</div>' : '') +
-      (ev.checks.length ? '<div class="row">' + ev.checks.map((c) => '<span>' + pill(c.status === 'ok' ? 'ok' : c.status === 'flag' ? 'flag' : 'unknown', c.label) + ' <span class="hint">' + esc(c.note) + '</span></span>').join('') + '</div>' : '') +
-      '<div class="ledger">' + lane('strength', 'Strengths') + lane('gap', 'Gaps') + lane('unknown', 'Unknowns') + '</div>' +
-      '<p class="hint">' + esc(SOURCE_NAME[ev.source] || 'Edited') + ', ' + fmtDate(ev.at) + '. ' + (ev.source === 'keyword' ? 'A keyword check compares words and can’t judge quality, so review each result.' : 'Review each result before relying on it.') + '</p>';
-  }
-  function evalCard(j) {
-    const open = ui.open === j.id;
-    const s = J.summarise(j.evaluation);
-    const cvReady = !!S.profile.cv.trim();
-    return '<article class="card"><button type="button" class="card-top" data-action="toggle" data-id="' + j.id + '" aria-expanded="' + open + '"><span class="card-title"><strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + '</small></span><span class="card-tags">' + (j.evaluation ? '<span class="mono">' + s.strengths + '/' + s.total + ' ' + s.label + '</span>' : '') + recPill(j) + '</span></button>' +
-      (open ? '<div class="card-body"><div class="row">' + btn(j.evaluation ? 'Check again' : 'Check this job', 'evaluate', j.id, '', (cvReady && j.requirements.length) ? '' : 'disabled') + '</div>' +
-        (!j.requirements.length ? '<p class="hint">This job has no requirements yet. Add the description in Add jobs, or use Claude below.</p>' : '') + evalDetail(j) + claudePanel(j, 'eval') + '</div>' : '') + '</article>';
+    let html = !j.requirements.length ? '<p class="hint">This job has no requirements yet. Add the description in Add jobs, or use Claude below.</p>' : '';
+    if (ev) {
+      const r = recOf(j);
+      const results = [['strength', 'Strength'], ['gap', 'Gap'], ['unknown', 'Unknown']];
+      const cols = [
+        { key: 'text', label: 'Requirement', w: 240, val: (i) => i.text.toLowerCase(), cell: (i) => ro(esc(i.text), 'wrap') },
+        { key: 'type', label: 'Type', w: 72, val: (i) => i.type, cell: (i) => ro(pill(i.type === 'must' ? 'info' : 'none', i.type === 'must' ? 'Must' : 'Nice')) },
+        { key: 'status', label: 'Result', w: 124, val: (i) => i.status, cell: (i) => cSel('item|' + j.id + '|' + i.rid + '|status', i.status, results, 'Result', 'tone-' + i.status) },
+        { key: 'evidence', label: 'Evidence from your CV', w: 280, cell: (i) => cArea('item|' + j.id + '|' + i.rid + '|evidence', i.evidence, 'Evidence') },
+        { key: 'note', label: 'Note', w: 180, cell: (i) => ro((i.unverified ? pill('flag', 'Not found in your CV') + ' ' : '') + esc(i.note), 'wrap hint') },
+      ];
+      html += '<div class="verdict">' + (r.rec ? pill(r.rec, REC_NAME[r.rec]) : '') + '<p>' + esc(r.why) + '</p></div>' +
+        (isStale(j) ? '<div class="banner warn"><p>Your profile or this job’s requirements changed after this check.</p>' + btn('Check again', 'evaluate', j.id, 'quiet') + '</div>' : '') +
+        (ev.hits.length ? '<div class="stack">' + ev.hits.map((h) => '<div class="item">' + pill('flag', 'Deal-breaker: ' + h.rule) + '<div class="note">“' + esc(h.quote) + '”</div></div>').join('') + '</div>' : '') +
+        (ev.checks.length ? '<div class="row">' + ev.checks.map((c) => '<span>' + pill(c.status === 'ok' ? 'ok' : c.status === 'flag' ? 'flag' : 'unknown', c.label) + ' <span class="hint">' + esc(c.note) + '</span></span>').join('') + '</div>' : '') +
+        sheet('items-' + j.id, cols, ev.items, { numbered: false, rowId: (i) => i.rid }) +
+        '<p class="hint">' + esc(SOURCE_NAME[ev.source] || 'Edited') + ', ' + fmtDate(ev.at) + '. ' + (ev.source === 'keyword' ? 'A keyword check compares words and can’t judge quality, so review each result.' : 'Review each result before relying on it.') + '</p>';
+    }
+    return html + claudePanel(j, 'eval');
   }
   function viewEvaluate() {
     const cvReady = !!S.profile.cv.trim();
     const pending = S.jobs.filter((j) => j.requirements.length && !j.evaluation).length;
-    return '<div class="page">' + head('Evaluate matches', 'See what your CV proves, what it doesn’t, and what only you can confirm. Change any result you disagree with.') +
+    const count = (j, k) => (j.evaluation ? J.summarise(j.evaluation)[k] : '');
+    const hint = { apply: 0, consider: 1, skip: 2 };
+    const cols = [
+      { key: 'job', label: 'Job', w: 240, val: (j) => jobName(j).toLowerCase(), cell: (j) => ro('<strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + '</small>', 'wrap') },
+      { key: 'rec', label: 'Advice', w: 150, val: (j) => (recOf(j).rec ? hint[recOf(j).rec] : ''), cell: (j) => { if (!j.evaluation) return ro(recPill(j)); const r = J.recommend(j.evaluation).rec; const auto = j.evaluation.claudeRec || r; return cSel('job|' + j.id + '|evaluation.override', j.evaluation.override, [['', 'Auto: ' + (REC_NAME[auto] || 'None')], ['apply', 'Apply'], ['consider', 'Consider'], ['skip', 'Skip']], 'Advice', 'tone-' + recOf(j).rec); } },
+      { key: 'ev', label: 'Must-haves met', w: 130, val: (j) => { const s = J.summarise(j.evaluation); return j.evaluation && s.total ? s.strengths / s.total : ''; }, cell: (j) => { const s = J.summarise(j.evaluation); return num(j.evaluation ? s.strengths + ' / ' + s.total : ''); } },
+      { key: 'gaps', label: 'Gaps', w: 76, val: (j) => count(j, 'gaps'), cell: (j) => num(count(j, 'gaps')) },
+      { key: 'unk', label: 'Unknowns', w: 96, val: (j) => count(j, 'unknowns'), cell: (j) => num(count(j, 'unknowns')) },
+      { key: 'deal', label: 'Deal-breaker', w: 124, cell: (j) => ro(j.evaluation ? (j.evaluation.hits.length ? pill('flag', 'Yes') : pill('ok', 'None')) : '') },
+      { key: 'sal', label: 'Salary', w: 84, cell: (j) => ro(checkOf(j, 'Salary')) },
+      { key: 'loc', label: 'Location', w: 92, cell: (j) => ro(checkOf(j, 'Location')) },
+      { key: 'go', label: 'Check', w: 110, cell: (j) => ro(btn(j.evaluation ? 'Re-check' : 'Check', 'evaluate', j.id, 'mini' + (j.evaluation ? ' quiet' : ''), cvReady && j.requirements.length ? '' : 'disabled')) },
+    ];
+    return '<div class="page wide">' + head('Evaluate matches', 'One row per job. Open a row with ▸ to see each requirement and change any result you disagree with.') +
       (!cvReady ? '<div class="banner warn"><p>Add your CV first. Every result is checked against it.</p><a href="#profile">Go to your profile</a></div>' : '') +
       (pending && cvReady ? '<div class="banner"><p>' + pending + (pending === 1 ? ' job is' : ' jobs are') + ' ready to check.</p>' + btn('Check all', 'evaluateAll') + '</div>' : '') +
-      (S.jobs.length ? '<section class="stack">' + S.jobs.slice().reverse().map(evalCard).join('') + '</section>' : empty('Evaluations appear here once you have saved a job.', go('Add a job', 'jobs'))) + '</div>';
+      (S.jobs.length ? '<div class="toolbar">' + filterBox('Title or company') + '</div>' + sheet('evaluate', cols, S.jobs, { main: true, detail: evalDetail, hay: (j) => [j.title, j.company, j.location].join(' ') }) : empty('Evaluations appear here once you have saved a job.', go('Add a job', 'jobs'))) + '</div>';
   }
 
   /* ---------- stage 4 ---------- */
-  function seg(j) {
-    return '<div class="seg" role="group" aria-label="Decision">' + [['pursue', 'Pursue'], ['hold', 'Hold'], ['pass', 'Pass']].map(([v, t]) => '<button type="button" data-action="decide" data-id="' + j.id + '|' + v + '" aria-pressed="' + (j.decision === v) + '">' + t + '</button>').join('') + '</div>';
-  }
   function viewShortlist() {
     const rank = { apply: 0, consider: 1, '': 2, skip: 3 };
-    const list = S.jobs.filter((j) => j.evaluation).sort((a, b) => rank[recOf(a).rec] - rank[recOf(b).rec]);
     const q = queue();
-    const rows = list.map((j) => { const s = J.summarise(j.evaluation); return '<tr><td><strong>' + esc(jobName(j)) + '</strong><br><span class="hint">' + esc(jobSub(j)) + '</span></td><td>' + recPill(j) + '</td><td class="mono">' + s.strengths + '/' + s.total + '</td><td class="mono">' + s.gaps + '</td><td class="mono">' + s.unknowns + '</td><td>' + (deadlinePill(j) || '<span class="hint">Not stated</span>') + '</td><td>' + seg(j) + '</td></tr>'; }).join('');
-    const qRows = q.map((j, i) => '<div class="queue-row"><div class="queue-n">' + (i + 1) + '</div><div class="stack"><div><strong>' + esc(jobName(j)) + '</strong> ' + deadlinePill(j) + '<br><span class="hint">' + esc(jobSub(j)) + '</span></div>' + field('Why this one is worth your time', 'job|' + j.id + '|why', j.why, { ph: 'One specific reason' }) + '<div class="row"><a href="#prepare" data-action="openPrep" data-id="' + j.id + '">Prepare this application</a></div></div><div class="arrows"><button type="button" class="icon" aria-label="Move up" data-action="move" data-id="' + j.id + '|-1"' + (i ? '' : ' disabled') + '>↑</button><button type="button" class="icon" aria-label="Move down" data-action="move" data-id="' + j.id + '|1"' + (i < q.length - 1 ? '' : ' disabled') + '>↓</button></div></div>').join('');
-    return '<div class="page">' + head('Shortlist', 'The recommendation is only advice. Your decision is what puts a job in the queue.') +
-      (list.length ? '<section class="panel"><h2>Compare</h2><div class="table-wrap"><table><thead><tr><th>Job</th><th>Advice</th><th>Evidenced</th><th>Gaps</th><th>Unknowns</th><th>Closing</th><th>Your decision</th></tr></thead><tbody>' + rows + '</tbody></table></div></section>' : empty('Evaluated jobs appear here side by side.', go('Evaluate a job', 'evaluate'))) +
-      '<section class="panel"><div class="panel-head"><h2>Application queue</h2><span class="mono">' + q.length + ' in queue</span></div>' + (q.length ? '<div class="stack">' + qRows + '</div>' : '<p class="hint">Choose Pursue on a job above to add it. Use the arrows to put the best one first.</p>') + '</section></div>';
+    const rest = S.jobs.filter((j) => j.evaluation && !q.includes(j)).sort((a, b) => rank[recOf(a).rec] - rank[recOf(b).rec]);
+    const list = q.concat(rest);
+    const decisions = [['', 'Decide…'], ['pursue', 'Pursue'], ['hold', 'Hold'], ['pass', 'Pass']];
+    const stat = (j) => J.summarise(j.evaluation);
+    const cols = [
+      { key: 'p', label: 'Priority', w: 124, val: (j) => { const i = q.indexOf(j); return i < 0 ? '' : i; }, cell: (j) => { const i = q.indexOf(j); return i < 0 ? ro('') : '<div class="prio"><b class="mono">' + (i + 1) + '</b><button type="button" class="icon" aria-label="Move up" data-action="move" data-id="' + j.id + '|-1"' + (i ? '' : ' disabled') + '>↑</button><button type="button" class="icon" aria-label="Move down" data-action="move" data-id="' + j.id + '|1"' + (i < q.length - 1 ? '' : ' disabled') + '>↓</button></div>'; } },
+      { key: 'job', label: 'Job', w: 230, val: (j) => jobName(j).toLowerCase(), cell: (j) => ro('<strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + '</small>', 'wrap') },
+      { key: 'rec', label: 'Advice', w: 96, val: (j) => rank[recOf(j).rec], cell: (j) => ro(recPill(j)) },
+      { key: 'ev', label: 'Must-haves met', w: 124, val: (j) => { const s = stat(j); return s.total ? s.strengths / s.total : ''; }, cell: (j) => { const s = stat(j); return num(s.strengths + ' / ' + s.total); } },
+      { key: 'gaps', label: 'Gaps', w: 70, val: (j) => stat(j).gaps, cell: (j) => num(stat(j).gaps) },
+      { key: 'unk', label: 'Unknowns', w: 92, val: (j) => stat(j).unknowns, cell: (j) => num(stat(j).unknowns) },
+      { key: 'close', label: 'Closing', w: 150, val: (j) => j.deadline, cell: (j) => ro(deadlinePill(j) || '<span class="hint">Not stated</span>') },
+      { key: 'dec', label: 'Your decision', w: 130, val: (j) => j.decision, cell: (j) => cSel('decision|' + j.id, j.decision, decisions, 'Your decision', 'tone-' + j.decision) },
+      { key: 'why', label: 'Why it’s worth your time', w: 280, cell: (j) => cIn('job|' + j.id + '|why', j.why, 'Why it is worth your time', j.decision === 'pursue' ? 'One specific reason' : '') },
+      { key: 'go', label: 'Next', w: 100, cell: (j) => ro(q.includes(j) ? '<a href="#prepare" data-action="openPrep" data-id="' + j.id + '">Prepare</a>' : '') },
+    ];
+    return '<div class="page wide">' + head('Shortlist', 'The advice is only a guide. Set Your decision to Pursue to add a job to your queue, then use the arrows to put the best one first.') +
+      (list.length ? '<div class="toolbar">' + filterBox('Title or company') + '<span class="hint mono">' + q.length + ' in queue</span></div>' + sheet('shortlist', cols, list, { main: true, hay: (j) => [j.title, j.company].join(' ') }) : empty('Evaluated jobs appear here side by side.', go('Evaluate a job', 'evaluate'))) + '</div>';
   }
 
   /* ---------- stage 5 ---------- */
@@ -237,29 +339,36 @@
   }
 
   /* ---------- stage 6 ---------- */
-  function trackRow(j) {
-    const open = ui.open === j.id;
-    const due = j.nextDate && j.nextDate <= today();
+  function trackDetail(j) {
     const events = j.events.slice().sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
-    return '<article class="card"><button type="button" class="card-top" data-action="toggle" data-id="' + j.id + '" aria-expanded="' + open + '"><span class="card-title"><strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + (j.appliedOn ? ' · applied ' + fmtDate(j.appliedOn) : '') + '</small></span><span class="card-tags">' + (due ? pill('late', 'Action due') : j.nextDate ? pill('none', 'Next ' + fmtDate(j.nextDate)) : '') + pill('info', STATUS_NAME[j.status]) + '</span></button>' +
-      (open ? '<div class="card-body"><div class="grid-3">' + select('Status', 'status|' + j.id, j.status, STATUS) + field('Applied on', 'job|' + j.id + '|appliedOn', j.appliedOn, { type: 'date' }) + field('Contact', 'job|' + j.id + '|contact', j.contact, { ph: 'Name or email' }) + '</div>' +
-        '<div class="grid-2">' + field('Next action', 'job|' + j.id + '|nextAction', j.nextAction, { ph: 'e.g. Chase recruiter' }) + field('Due', 'job|' + j.id + '|nextDate', j.nextDate, { type: 'date' }) + '</div>' +
-        '<div class="stack"><h3>Add to the record</h3><div class="note-form"><label class="f" for="nt-' + j.id + '">Type<select id="nt-' + j.id + '">' + NOTE_TYPES.map((t) => '<option>' + t + '</option>').join('') + '</select></label><label class="f" for="nd-' + j.id + '">Date<input id="nd-' + j.id + '" type="date" value="' + today() + '"></label><label class="f" for="nn-' + j.id + '">What happened<input id="nn-' + j.id + '"></label>' + btn('Add', 'addNote', j.id) + '</div></div>' +
-        '<div class="stack"><h3>History</h3><ol class="timeline">' + events.map((e) => '<li><span class="mono">' + esc(fmtDate(e.date)) + '</span><span><strong>' + esc(e.type) + '.</strong> ' + esc(e.note) + '</span></li>').join('') + '</ol></div></div>' : '') + '</article>';
+    return '<div class="stack"><h3>Add to the record</h3><div class="note-form"><label class="f" for="nt-' + j.id + '">Type<select id="nt-' + j.id + '">' + NOTE_TYPES.map((t) => '<option>' + t + '</option>').join('') + '</select></label><label class="f" for="nd-' + j.id + '">Date<input id="nd-' + j.id + '" type="date" value="' + today() + '"></label><label class="f" for="nn-' + j.id + '">What happened<input id="nn-' + j.id + '"></label>' + btn('Add', 'addNote', j.id) + '</div></div>' +
+      '<div class="stack"><h3>History</h3><ol class="timeline">' + events.map((e) => '<li><span class="mono">' + esc(fmtDate(e.date)) + '</span><span><strong>' + esc(e.type) + '.</strong> ' + esc(e.note) + '</span></li>').join('') + '</ol></div>';
   }
   function viewTrack() {
     const t = tracked();
     const sent = t.filter((j) => ['applied', 'replied', 'interview', 'offer', 'rejected'].includes(j.status)).length;
     const replied = t.filter((j) => ['replied', 'interview', 'offer', 'rejected'].includes(j.status)).length;
     const interviews = t.filter((j) => j.events.some((e) => e.type === 'Interview') || ['interview', 'offer'].includes(j.status)).length;
-    const due = t.filter((j) => j.nextDate && j.nextDate <= today() && !['offer', 'rejected', 'withdrawn'].includes(j.status)).length;
+    const isDue = (j) => j.nextDate && j.nextDate <= today() && !['offer', 'rejected', 'withdrawn'].includes(j.status);
+    const due = t.filter(isDue).length;
     const stat = (n, l) => '<div class="stat"><b>' + n + '</b><span>' + l + '</span></div>';
     const chip = (v, l, n) => '<button type="button" class="chip" data-action="filter" data-id="' + v + '" aria-pressed="' + (ui.filter === v) + '">' + l + ' ' + n + '</button>';
     const shown = ui.filter === 'all' ? t : t.filter((j) => j.status === ui.filter);
-    return '<div class="page">' + head('Track progress', 'Every application, reply and interview in one record.') +
+    const last = (j) => j.events.reduce((m, e) => (e.date > m ? e.date : m), '');
+    const cols = [
+      { key: 'job', label: 'Job', w: 230, val: (j) => jobName(j).toLowerCase(), cell: (j) => ro('<strong>' + esc(jobName(j)) + '</strong><small>' + esc(jobSub(j)) + '</small>', 'wrap') },
+      { key: 'status', label: 'Status', w: 150, val: (j) => STATUS.findIndex(([v]) => v === j.status), cell: (j) => cSel('status|' + j.id, j.status, STATUS, 'Status') },
+      { key: 'applied', label: 'Applied on', w: 150, val: (j) => j.appliedOn, cell: (j) => cDate('job|' + j.id + '|appliedOn', j.appliedOn, 'Applied on') },
+      { key: 'contact', label: 'Contact', w: 170, val: (j) => j.contact.toLowerCase(), cell: (j) => cIn('job|' + j.id + '|contact', j.contact, 'Contact') },
+      { key: 'next', label: 'Next action', w: 220, val: (j) => j.nextAction.toLowerCase(), cell: (j) => cIn('job|' + j.id + '|nextAction', j.nextAction, 'Next action') },
+      { key: 'due', label: 'Due', w: 150, val: (j) => j.nextDate, cell: (j) => cDate('job|' + j.id + '|nextDate', j.nextDate, 'Due') },
+      { key: 'flag', label: 'Alert', w: 110, val: (j) => (isDue(j) ? 0 : ''), cell: (j) => ro(isDue(j) ? pill('late', 'Action due') : '') },
+      { key: 'last', label: 'Last update', w: 130, val: last, cell: (j) => ro(esc(fmtDate(last(j))), 'mono') },
+    ];
+    return '<div class="page wide">' + head('Track progress', 'Every application in one sheet. Open a row with ▸ to log a call, email or interview.') +
       '<div class="stats">' + stat(sent, 'Applications sent') + stat(sent ? replied + ' of ' + sent : '0', 'Got a reply') + stat(interviews, 'Reached interview') + stat(due, 'Actions due') + '</div>' +
-      '<div class="chips">' + chip('all', 'All', t.length) + STATUS.filter(([v]) => t.some((j) => j.status === v)).map(([v, l]) => chip(v, l, t.filter((j) => j.status === v).length)).join('') + '</div>' +
-      (shown.length ? '<section class="stack">' + shown.map(trackRow).join('') + '</section>' : empty('Applications appear here once you choose to pursue a job.', go('Open your shortlist', 'shortlist'))) + '</div>';
+      '<div class="toolbar"><div class="chips">' + chip('all', 'All', t.length) + STATUS.filter(([v]) => t.some((j) => j.status === v)).map(([v, l]) => chip(v, l, t.filter((j) => j.status === v).length)).join('') + '</div>' + filterBox('Title or company') + '</div>' +
+      (shown.length ? sheet('track', cols, shown, { main: true, detail: trackDetail, hay: (j) => [j.title, j.company, j.contact, STATUS_NAME[j.status]].join(' ') }) : empty('Applications appear here once you choose to pursue a job.', go('Open your shortlist', 'shortlist'))) + '</div>';
   }
 
   /* ---------- render ---------- */
@@ -281,6 +390,7 @@
     const y = window.scrollY;
     renderNav();
     $('#view').innerHTML = VIEWS[route()]();
+    applyFilter();
     Object.keys(replies).forEach((id) => { const t = document.getElementById(id); if (t) t.value = replies[id]; });
     const f = (focusId && document.getElementById(focusId)) || (focusAct && $(focusAct));
     if (f) f.focus({ preventScroll: true });
@@ -301,7 +411,7 @@
       const j = job(a);
       const i = j && j.evaluation.items.find((x) => x.rid === b);
       if (i) { i[c] = value; if (c === 'status') { j.evaluation.claudeRec = ''; j.evaluation.source = 'edited'; } if (c === 'evidence') i.unverified = i.status === 'strength' && !J.evidenceInCv(value, S.profile.cv); }
-    } else if (kind === 'status') { changeStatus(job(a), value); }
+    } else if (kind === 'status') { changeStatus(job(a), value); } else if (kind === 'decision') { setDecision(job(a), value); }
     save();
   }
   function changeStatus(j, status, quiet) {
@@ -312,6 +422,35 @@
     log(j, 'Status', (from ? STATUS_NAME[from] + ' → ' : '') + STATUS_NAME[status]);
     if (!quiet) saveNow();
   }
+  function setDecision(j, d) {
+    if (!j || j.decision === d) return;
+    j.decision = d;
+    if (d === 'pursue') { j.order = Math.max(0, ...S.jobs.map((x) => x.order || 0)) + 1; if (!j.status) changeStatus(j, 'preparing', true); }
+    else if (j.status === 'preparing' || j.status === 'ready') j.status = '';
+    log(j, 'Decision', d ? d[0].toUpperCase() + d.slice(1) : 'Cleared');
+  }
+  function addLinks(text) {
+    const { valid, invalid } = J.parseLinks(text);
+    if (!valid.length && !invalid.length) { toast('Paste at least one link first.'); return null; }
+    const known = new Set(S.jobs.map((j) => J.cleanUrl(j.url)));
+    const fresh = valid.filter((u) => !known.has(u));
+    let last = null;
+    fresh.forEach((url) => { last = newJob({ url }); log(last, 'Added', 'Link saved'); S.jobs.push(last); });
+    commit();
+    const dupes = valid.length - fresh.length;
+    toast([fresh.length + (fresh.length === 1 ? ' link saved' : ' links saved'), dupes ? dupes + ' already saved' : '', invalid.length ? invalid.length + ' not a valid link' : ''].filter(Boolean).join(', '));
+    return last;
+  }
+  function addFromNewRow(col, value) {
+    const v = value.trim();
+    if (!v) return;
+    const active = document.activeElement;
+    const nextCol = active && active.dataset && active.dataset.new ? active.dataset.new : active === document.body ? 'title' : '';
+    const made = col === 'url' ? addLinks(v) : (() => { const j = newJob({ [col]: v }); log(j, 'Added', 'Added in the sheet'); S.jobs.push(j); commit(); return j; })();
+    const input = $('#new-' + col);
+    if (input) input.value = '';
+    if (made && nextCol) { const el = document.getElementById(bid('job|' + made.id + '|' + nextCol)); if (el) el.focus(); }
+  }
   function runEval(j) {
     const old = j.evaluation;
     j.evaluation = J.evaluate(j, S.profile);
@@ -320,6 +459,48 @@
   }
   async function copy(text, done) {
     try { await navigator.clipboard.writeText(text); toast(done); } catch (e) { toast('Copying is blocked here. Select the text and copy it yourself.'); }
+  }
+  function setCv(text, name) { S.profile.cv = text; S.profile.cvFile = name; S.profile.cvRead = today(); }
+  const PDFJS = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/';
+  let pdfLib = null;
+  function loadPdfLib() {
+    if (!pdfLib) pdfLib = new Promise((resolve, reject) => {
+      const tag = document.createElement('script');
+      tag.src = PDFJS + 'pdf.min.js';
+      tag.onload = () => { window.pdfjsLib.GlobalWorkerOptions.workerSrc = PDFJS + 'pdf.worker.min.js'; resolve(window.pdfjsLib); };
+      tag.onerror = () => { pdfLib = null; reject(new Error('library')); };
+      document.head.appendChild(tag);
+    });
+    return pdfLib;
+  }
+  async function readPdf(file) {
+    const lib = await loadPdfLib();
+    const doc = await lib.getDocument({ data: await file.arrayBuffer() }).promise;
+    const pages = [];
+    for (let n = 1; n <= doc.numPages; n++) pages.push((await (await doc.getPage(n)).getTextContent()).items);
+    return J.pdfItemsToText(pages);
+  }
+  async function handleCvFile(file) {
+    if (!/\.pdf$/i.test(file.name) && file.type !== 'application/pdf') { toast('Please choose a PDF file.'); return; }
+    if (file.size > 15 * 1024 * 1024) { toast('That PDF is over 15 MB. Try a smaller copy.'); return; }
+    ui.cvBusy = true;
+    render();
+    let text = '';
+    let problem = '';
+    try {
+      text = await readPdf(file);
+      if (text.replace(/\s/g, '').length < 40) problem = 'This PDF is a scanned image, so it has no text to read. Export your CV as a text PDF, or paste it in.';
+    } catch (e) {
+      if (e && e.message === 'library') problem = 'Couldn’t load the PDF reader. Check your connection and try again, or paste your CV in.';
+      else if (e && e.name === 'PasswordException') problem = 'This PDF is password protected. Remove the password and try again, or paste your CV in.';
+      else problem = 'Couldn’t read this PDF. Try exporting it again, or paste your CV in.';
+    }
+    ui.cvBusy = false;
+    if (problem) { render(); toast(problem); return; }
+    if (S.profile.cv.trim()) { ui.cvPending = { text, name: file.name }; render(); return; }
+    setCv(text, file.name);
+    commit();
+    toast('CV added. Check the text looks right.');
   }
   function fillFromDescription(j) {
     const d = J.extractDetails(j.description);
@@ -351,18 +532,12 @@
     tab(k) { ui.tab = k; ui.confirm = null; render(); },
     filter(v) { ui.filter = v; render(); },
     openPrep(id) { ui.prep = id; ui.tab = 'cv'; },
+    pickCv() { $('#cv-file').click(); },
+    useCv() { setCv(ui.cvPending.text, ui.cvPending.name); ui.cvPending = null; commit(); toast('CV added. Check the text looks right.'); },
+    dropCv() { ui.cvPending = null; render(); },
     loadExample,
     removeExample() { const jobs = S.jobs.filter((j) => !j.example); const profile = S.profile.name === 'Example Candidate' ? blank().profile : S.profile; S = { ...blank(), profile, jobs }; ui.open = null; commit(); toast('Example data removed'); },
-    addLinks() {
-      const { valid, invalid } = J.parseLinks($('#new-links').value);
-      if (!valid.length && !invalid.length) { toast('Paste at least one link first.'); return; }
-      const known = new Set(S.jobs.map((j) => J.cleanUrl(j.url)));
-      const fresh = valid.filter((u) => !known.has(u));
-      fresh.forEach((url) => { const j = newJob({ url }); log(j, 'Added', 'Link saved'); S.jobs.push(j); });
-      commit();
-      const dupes = valid.length - fresh.length;
-      toast([fresh.length + (fresh.length === 1 ? ' link saved' : ' links saved'), dupes ? dupes + ' already saved' : '', invalid.length ? invalid.length + ' not a valid link' : ''].filter(Boolean).join(', '));
-    },
+    addLinks() { if (addLinks($('#new-links').value)) $('#new-links').value = ''; },
     addJd() {
       const text = $('#new-jd').value.trim();
       if (!text) { toast('Paste a job description first.'); return; }
@@ -400,15 +575,7 @@
       const bad = j.evaluation.items.filter((i) => i.unverified).length;
       toast(bad ? bad + ' quoted lines weren’t found in your CV. They’re marked.' : 'Assessment added');
     },
-    decide(v) {
-      const [id, d] = v.split('|');
-      const j = job(id);
-      j.decision = j.decision === d ? '' : d;
-      if (j.decision === 'pursue') { j.order = Math.max(0, ...S.jobs.map((x) => x.order || 0)) + 1; if (!j.status) changeStatus(j, 'preparing', true); }
-      else if (j.status === 'preparing' || j.status === 'ready') { j.status = ''; }
-      log(j, 'Decision', j.decision ? d[0].toUpperCase() + d.slice(1) : 'Cleared');
-      commit();
-    },
+    sort(v) { const [n, k] = v.split('|'); const c = ui.sort[n]; ui.sort[n] = c && c.key === k ? (c.dir > 0 ? { key: k, dir: -1 } : null) : { key: k, dir: 1 }; render(); },
     move(v) {
       const [id, dir] = v.split('|');
       const q = queue();
@@ -452,16 +619,51 @@
     const fn = A[t.dataset.action];
     if (fn) fn(t.dataset.id);
   });
-  document.addEventListener('input', (e) => { const b = e.target.dataset && e.target.dataset.bind; if (b && e.target.tagName !== 'SELECT') setBind(b, e.target.value, false); });
+  document.addEventListener('input', (e) => {
+    if (e.target.id === 'sheet-filter') { ui.q = e.target.value; applyFilter(); return; }
+    const b = e.target.dataset && e.target.dataset.bind;
+    if (b && e.target.tagName !== 'SELECT') setBind(b, e.target.value, false);
+  });
+  document.addEventListener('paste', (e) => {
+    if (e.target.id !== 'new-url') return;
+    const text = e.clipboardData.getData('text');
+    if (J.parseLinks(text).valid.length < 2) return;
+    e.preventDefault();
+    addLinks(text);
+  });
+  document.addEventListener('keydown', (e) => {
+    const t = e.target;
+    if (!t.classList || !t.classList.contains('c')) return;
+    const key = e.key;
+    if (key === 'Enter' && t.tagName !== 'TEXTAREA') {
+      e.preventDefault();
+      if (t.dataset.new) t.blur(); else moveCell(t, e.shiftKey ? -1 : 1, 0);
+      return;
+    }
+    if (!['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key) || t.type === 'date') return;
+    const textual = t.tagName !== 'SELECT';
+    const atStart = textual && t.selectionStart === 0 && t.selectionEnd === 0;
+    const atEnd = textual && t.selectionStart === t.value.length && t.selectionEnd === t.value.length;
+    const all = textual && t.selectionStart === 0 && t.selectionEnd === t.value.length;
+    const vertical = key === 'ArrowUp' || key === 'ArrowDown';
+    if (t.tagName === 'TEXTAREA' && !(key === 'ArrowUp' || key === 'ArrowLeft' ? atStart : atEnd) && !all) return;
+    if (t.tagName === 'INPUT' && !vertical && !all && !(key === 'ArrowLeft' ? atStart : atEnd)) return;
+    e.preventDefault();
+    moveCell(t, key === 'ArrowUp' ? -1 : key === 'ArrowDown' ? 1 : 0, key === 'ArrowLeft' ? -1 : key === 'ArrowRight' ? 1 : 0);
+  });
   document.addEventListener('change', (e) => {
     const b = e.target.dataset && e.target.dataset.bind;
+    if (e.target.dataset && e.target.dataset.new) { const col = e.target.dataset.new; const v = e.target.value; setTimeout(() => addFromNewRow(col, v), 0); return; }
     if (!b) return;
-    if (e.target.tagName === 'SELECT' || e.target.type === 'date') { setBind(b, e.target.value, true); saveNow(); render(); } else saveNow();
+    if (e.target.tagName === 'SELECT') { setBind(b, e.target.value, true); saveNow(); render(); }
+    else if (e.target.type === 'date') { setBind(b, e.target.value, true); saveNow(); needsRender = true; }
+    else saveNow();
   });
-  document.addEventListener('focusout', () => { if (saveTimer) saveNow(); });
+  document.addEventListener('focusout', () => { if (saveTimer) saveNow(); if (needsRender) { needsRender = false; setTimeout(render, 0); } });
   window.addEventListener('beforeunload', () => { if (saveTimer) saveNow(); });
-  window.addEventListener('hashchange', () => { ui.open = null; ui.confirm = null; render(); window.scrollTo(0, 0); });
+  window.addEventListener('hashchange', () => { ui.open = null; ui.confirm = null; ui.cvPending = null; ui.q = ''; render(); window.scrollTo(0, 0); });
   window.addEventListener('storage', (e) => { if (e.key === KEY && document.hidden) { S = load(); render(); } });
+  $('#cv-file').addEventListener('change', (e) => { const f = e.target.files[0]; e.target.value = ''; if (f) handleCvFile(f); });
   $('#import-file').addEventListener('change', (e) => {
     const file = e.target.files[0];
     e.target.value = '';

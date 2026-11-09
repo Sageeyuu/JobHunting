@@ -299,6 +299,31 @@
     return !!e && norm(cv).includes(e);
   }
 
+  /* Rebuilds lines from PDF text items, keeping the PDF's own reading order so columns stay together. */
+  function pdfItemsToText(pages) {
+    return pages.map((items) => {
+      const lines = [];
+      let line = '';
+      let lastY = null;
+      let lastEnd = null;
+      items.forEach((it) => {
+        const x = it.transform[4];
+        const y = it.transform[5];
+        const size = Math.abs(it.height) || Math.abs(it.transform[3]) || 10;
+        if (it.str) {
+          if (lastY !== null && Math.abs(y - lastY) > size * 0.5) { lines.push(line); line = ''; lastEnd = null; }
+          if (line && lastEnd !== null && x - lastEnd > size * 0.15 && !/\s$/.test(line) && !/^\s/.test(it.str)) line += ' ';
+          line += it.str;
+          lastY = y;
+          lastEnd = x + (it.width || 0);
+        }
+        if (it.hasEOL) { lines.push(line); line = ''; lastEnd = null; lastY = null; }
+      });
+      lines.push(line);
+      return lines.map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
+    }).filter(Boolean).join('\n\n');
+  }
+
   /* ---------- working with Claude by copy and paste ---------- */
 
   function profileBlock(p) {
@@ -408,5 +433,5 @@
     return ['[Turn these lines from your CV into your answer:]', ...ranked.map((x) => '- ' + x[1])].join('\n');
   }
 
-  return { uid, tokens, hash, parseLinks, cleanUrl, hostLabel, toIso, extractDetails, extractRequirements, parseSalary, cvLines, matchRequirement, checkProfile, basisOf, evaluate, summarise, recommend, evidenceInCv, evalPrompt, parseEvalReply, applyEvalReply, draftPrompt, cvDraft, coverDraft, answerDraft };
+  return { pdfItemsToText, uid, tokens, hash, parseLinks, cleanUrl, hostLabel, toIso, extractDetails, extractRequirements, parseSalary, cvLines, matchRequirement, checkProfile, basisOf, evaluate, summarise, recommend, evidenceInCv, evalPrompt, parseEvalReply, applyEvalReply, draftPrompt, cvDraft, coverDraft, answerDraft };
 });
