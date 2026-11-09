@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>JobHunting</title>
+  <meta name="description" content="A private tracker for fewer, better job applications.">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400&family=Familjen+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="rail">
+      <a class="brand" href="#profile">JobHunting</a>
+      <nav id="nav" aria-label="Stages"></nav>
+      <div class="rail-foot">
+        <p class="privacy">Saved only in this browser. Nothing goes to GitHub.</p>
+        <div class="rail-actions">
+          <button type="button" class="link" data-action="export">Download backup</button>
+          <label class="link" for="import-file">Restore backup</label>
+          <input id="import-file" type="file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+    </aside>
+    <main id="view" tabindex="-1"></main>
+  </div>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <script src="logic.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
