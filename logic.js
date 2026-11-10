@@ -253,12 +253,12 @@
 
   function basisOf(job, profile) {
     return hash(profile.cv + '|' + profile.dealBreakers + '|' + profile.minSalary + '|' + profile.locations + '|' +
-      (job.requirements || []).map((r) => r.text + r.type).join('|'));
+      (job.requirements || []).filter((r) => r.text.trim()).map((r) => r.text + r.type).join('|'));
   }
 
   function evaluate(job, profile) {
     const lines = cvLines(profile.cv);
-    const items = (job.requirements || []).map((r) => {
+    const items = (job.requirements || []).filter((r) => r.text.trim()).map((r) => {
       const m = matchRequirement(r.text, lines);
       return { rid: r.id, text: r.text, type: r.type, status: m.status, evidence: m.evidence, note: m.note, unverified: false };
     });

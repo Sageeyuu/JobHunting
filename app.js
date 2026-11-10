@@ -208,12 +208,13 @@
     return '<div class="stack"><div class="panel-head"><h3>Requirements (' + j.requirements.length + ')</h3>' + btn('Add requirement', 'addReq', j.id, 'quiet') + '</div>' +
       (j.requirements.length ? j.requirements.map((r) => '<div class="req"><input aria-label="Requirement" id="' + bid('req|' + r.id) + '" data-bind="req|' + j.id + '|' + r.id + '|text" value="' + esc(r.text) + '">' +
         '<select aria-label="Importance" id="' + bid('rt|' + r.id) + '" data-bind="req|' + j.id + '|' + r.id + '|type"><option value="must"' + (r.type === 'must' ? ' selected' : '') + '>Must</option><option value="nice"' + (r.type === 'nice' ? ' selected' : '') + '>Nice</option></select>' +
-        '<button type="button" class="icon" aria-label="Remove requirement" data-action="delReq" data-id="' + j.id + '|' + r.id + '">×</button></div>').join('') : '<p class="hint">None yet. Paste the description above and choose Find requirements.</p>') + '</div>';
+        '<button type="button" class="icon" aria-label="Remove requirement" data-action="delReq" data-id="' + j.id + '|' + r.id + '">×</button></div>').join('') : '<p class="hint">None yet. Paste the description above and they’re found automatically.</p>') + '</div>';
   }
   function jobDetail(j) {
     return (j.url ? '<p class="hint"><a href="' + safeHref(j.url) + '" target="_blank" rel="noopener">Open the advert</a></p>' : '') +
       field('Job description', 'job|' + j.id + '|description', j.description, { area: 1, cls: 'tall', ph: 'Open the advert, copy the whole text and paste it here.' }) +
-      '<div class="row">' + btn('Find requirements', 'extract', j.id) + '</div>' + reqEditor(j) + (j.description && j.requirements.length ? '' : claudePanel(j, 'jobs')) +
+      (j.evaluation ? '<div class="verdict">' + recPill(j) + '<p>' + esc(recOf(j).why) + ' <a href="#evaluate" data-action="openEval" data-id="' + j.id + '">See the full check</a></p></div>' : '') +
+      '<div class="row">' + btn('Read the description again', 'extract', j.id, 'quiet') + '</div>' + reqEditor(j) + (j.description && j.requirements.length ? '' : claudePanel(j, 'jobs')) +
       '<div class="row">' + twoStep('Remove job', 'delJob', j.id) + '</div>';
   }
   function viewJobs() {
@@ -225,13 +226,14 @@
       { key: 'salary', label: 'Salary', w: 150, val: (j) => j.salary, cell: (j) => cIn('job|' + j.id + '|salary', j.salary, 'Salary') },
       { key: 'deadline', label: 'Closing date', w: 150, val: (j) => j.deadline, cell: (j) => cDate('job|' + j.id + '|deadline', j.deadline, 'Closing date') },
       { key: 'reqs', label: 'Requirements', w: 170, val: (j) => j.requirements.length, cell: (j) => ro(j.requirements.length ? pill('ok', j.requirements.length + ' found') : pill('soon', j.description ? 'None found' : 'Needs description')) },
+      { key: 'advice', label: 'Advice', w: 130, cell: (j) => ro(j.evaluation ? '<a href="#evaluate" data-action="openEval" data-id="' + j.id + '">' + recPill(j) + '</a>' : '') },
     ];
-    const newRow = '<tr class="r new"><td class="n">+</td>' + [['url', 'New job: paste a link', 'Paste link(s) here'], ['title', 'New job: title', 'Or type a job title'], ['company', 'New job: company', ''], ['location', 'New job: location', ''], ['salary', 'New job: salary', '']].map(([k, l, ph], i) => '<td' + (i ? '' : ' class="stick"') + '><input class="c" id="new-' + k + '" data-new="' + k + '" aria-label="' + l + '" placeholder="' + ph + '"></td>').join('') + '<td></td><td></td></tr>';
-    return '<div class="page wide">' + head('Add jobs', 'Paste links into the bottom row, or type straight into any cell. Open a row with ▸ to add its description.') +
+    const newRow = '<tr class="r new"><td class="n">+</td>' + [['url', 'New job: paste a link', 'Paste link(s) here'], ['title', 'New job: title', 'Or type a job title'], ['company', 'New job: company', ''], ['location', 'New job: location', ''], ['salary', 'New job: salary', '']].map(([k, l, ph], i) => '<td' + (i ? '' : ' class="stick"') + '><input class="c" id="new-' + k + '" data-new="' + k + '" aria-label="' + l + '" placeholder="' + ph + '"></td>').join('') + '<td></td><td></td><td></td></tr>';
+    return '<div class="page wide">' + head('Add jobs', 'Paste links into the bottom row, then open a row with ▸ and paste its description. It’s checked against your CV as soon as you paste it.') +
       '<div class="toolbar">' + filterBox('Title, company or location') + '<span class="hint mono">' + S.jobs.length + ' jobs</span></div>' +
       sheet('jobs', cols, S.jobs, { main: true, detail: jobDetail, newRow, hay: (j) => [j.url, j.title, j.company, j.location].join(' ') }) +
       '<details class="more"' + (S.jobs.length ? '' : ' open') + '><summary>Paste many links or a whole job description</summary><div class="grid-2"><div class="stack"><label class="f" for="new-links">Job links, one per line<textarea id="new-links" placeholder="https://…"></textarea></label><div class="row">' + btn('Save links', 'addLinks') + '</div></div>' +
-      '<div class="stack"><label class="f" for="new-jd">Job description<textarea id="new-jd" placeholder="Use this when a link won’t open or has expired."></textarea></label><div class="row">' + btn('Save description', 'addJd', '', 'quiet') + '</div></div></div></details></div>';
+      '<div class="stack"><label class="f" for="new-jd">Job description<textarea id="new-jd" placeholder="Paste a whole advert. It’s checked against your CV straight away."></textarea></label><div class="row">' + btn('Save description', 'addJd', '', 'quiet') + '</div></div></div></details></div>';
   }
 
   /* ---------- stage 3 ---------- */
@@ -274,7 +276,7 @@
       { key: 'loc', label: 'Location', w: 92, cell: (j) => ro(checkOf(j, 'Location')) },
       { key: 'go', label: 'Check', w: 110, cell: (j) => ro(btn(j.evaluation ? 'Re-check' : 'Check', 'evaluate', j.id, 'mini' + (j.evaluation ? ' quiet' : ''), cvReady && j.requirements.length ? '' : 'disabled')) },
     ];
-    return '<div class="page wide">' + head('Evaluate matches', 'One row per job. Open a row with ▸ to see each requirement and change any result you disagree with.') +
+    return '<div class="page wide">' + head('Evaluate matches', 'Jobs are checked automatically when you paste their description, and re-checked when your CV changes. Open a row with ▸ to change any result you disagree with.') +
       (!cvReady ? '<div class="banner warn"><p>Add your CV first. Every result is checked against it.</p><a href="#profile">Go to your profile</a></div>' : '') +
       (pending && cvReady ? '<div class="banner"><p>' + pending + (pending === 1 ? ' job is' : ' jobs are') + ' ready to check.</p>' + btn('Check all', 'evaluateAll') + '</div>' : '') +
       (S.jobs.length ? '<div class="toolbar">' + filterBox('Title or company') + '</div>' + sheet('evaluate', cols, S.jobs, { main: true, detail: evalDetail, hay: (j) => [j.title, j.company, j.location].join(' ') }) : empty('Evaluations appear here once you have saved a job.', go('Add a job', 'jobs'))) + '</div>';
@@ -388,6 +390,7 @@
     const replies = {};
     document.querySelectorAll('[data-reply]').forEach((t) => { if (t.value) replies[t.id] = t.value; });
     const y = window.scrollY;
+    if (autoEvaluate()) saveNow();
     renderNav();
     $('#view').innerHTML = VIEWS[route()]();
     applyFilter();
@@ -453,9 +456,32 @@
   }
   function runEval(j) {
     const old = j.evaluation;
+    const before = old ? recOf(j).rec : null;
     j.evaluation = J.evaluate(j, S.profile);
     if (old && old.override) j.evaluation.override = old.override;
-    log(j, 'Evaluated', (REC_NAME[recOf(j).rec] || 'No result') + ' from the keyword check');
+    const after = recOf(j).rec;
+    if (after !== before) log(j, 'Evaluated', (REC_NAME[after] || 'No result') + ' from the automatic check');
+  }
+  /* Checks every job that has requirements but no result, and re-checks automatic results that are out of date.
+     Results from Claude or ones you edited are left alone. */
+  function autoEvaluate() {
+    if (!S.profile.cv.trim()) return 0;
+    let n = 0;
+    S.jobs.forEach((j) => {
+      if (!j.requirements.some((r) => r.text.trim())) return;
+      if (!j.evaluation || (j.evaluation.source === 'keyword' && isStale(j))) { runEval(j); n++; }
+    });
+    return n;
+  }
+  function readAndCheck(j) {
+    const n = fillFromDescription(j);
+    j.readFrom = J.hash(j.description);
+    if (!n) return 'No requirements found. Add them below, or use Claude.';
+    if (!S.profile.cv.trim()) return n + ' requirements found. Upload your CV on Your profile to check them.';
+    runEval(j);
+    const r = recOf(j);
+    const s = J.summarise(j.evaluation);
+    return 'Checked: ' + s.strengths + ' of ' + s.total + ' ' + s.label + ' met. Advice: ' + (REC_NAME[r.rec] || 'none') + '.';
   }
   async function copy(text, done) {
     try { await navigator.clipboard.writeText(text); toast(done); } catch (e) { toast('Copying is blocked here. Select the text and copy it yourself.'); }
@@ -531,6 +557,7 @@
     cancelConfirm() { ui.confirm = null; render(); },
     tab(k) { ui.tab = k; ui.confirm = null; render(); },
     filter(v) { ui.filter = v; render(); },
+    openEval(id) { setTimeout(() => { ui.open = id; render(); }, 0); },
     openPrep(id) { ui.prep = id; ui.tab = 'cv'; },
     pickCv() { $('#cv-file').click(); },
     useCv() { setCv(ui.cvPending.text, ui.cvPending.name); ui.cvPending = null; commit(); toast('CV added. Check the text looks right.'); },
@@ -542,19 +569,20 @@
       const text = $('#new-jd').value.trim();
       if (!text) { toast('Paste a job description first.'); return; }
       const j = newJob({ description: text });
-      const n = fillFromDescription(j);
       log(j, 'Added', 'Description pasted');
+      const msg = readAndCheck(j);
       S.jobs.push(j);
       ui.open = j.id;
+      $('#new-jd').value = '';
       commit();
-      toast(n ? n + ' requirements found. Check them below.' : 'No requirements found. Add them below or use Claude.');
+      toast(msg);
     },
     extract(id) {
       const j = job(id);
       if (!j.description.trim()) { toast('Paste the job description first.'); return; }
-      const n = fillFromDescription(j);
+      const msg = readAndCheck(j);
       commit();
-      toast(n ? n + ' requirements found. Check them below.' : 'No requirements found. Add them yourself or use Claude.');
+      toast(msg);
     },
     addReq(id) { const j = job(id); j.requirements.push({ id: J.uid(), text: '', type: 'must' }); commit(); },
     delReq(v) { const [a, b] = v.split('|'); const j = job(a); j.requirements = j.requirements.filter((r) => r.id !== b); commit(); },
@@ -624,7 +652,18 @@
     const b = e.target.dataset && e.target.dataset.bind;
     if (b && e.target.tagName !== 'SELECT') setBind(b, e.target.value, false);
   });
+  function descriptionChanged(el) {
+    const m = /^job\|([^|]+)\|description$/.exec((el.dataset && el.dataset.bind) || '');
+    if (!m) return;
+    const j = job(m[1]);
+    if (!j || !j.description.trim() || J.hash(j.description) === j.readFrom) return;
+    setBind(el.dataset.bind, el.value, false);
+    const msg = readAndCheck(j);
+    commit();
+    toast(msg);
+  }
   document.addEventListener('paste', (e) => {
+    if (/\|description$/.test((e.target.dataset && e.target.dataset.bind) || '')) { const el = e.target; setTimeout(() => descriptionChanged(el), 0); return; }
     if (e.target.id !== 'new-url') return;
     const text = e.clipboardData.getData('text');
     if (J.parseLinks(text).valid.length < 2) return;
@@ -657,7 +696,7 @@
     if (!b) return;
     if (e.target.tagName === 'SELECT') { setBind(b, e.target.value, true); saveNow(); render(); }
     else if (e.target.type === 'date') { setBind(b, e.target.value, true); saveNow(); needsRender = true; }
-    else saveNow();
+    else { saveNow(); descriptionChanged(e.target); }
   });
   document.addEventListener('focusout', () => { if (saveTimer) saveNow(); if (needsRender) { needsRender = false; setTimeout(render, 0); } });
   window.addEventListener('beforeunload', () => { if (saveTimer) saveNow(); });
